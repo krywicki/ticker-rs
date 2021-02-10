@@ -1,6 +1,8 @@
 use std::iter::Iterator;
 use std::collections::HashMap;
 
+use async_trait::async_trait;
+
 use hyper::{ Client, http::uri::Uri};
 use hyper::client::HttpConnector;
 use hyper_tls::HttpsConnector;
@@ -14,6 +16,7 @@ use serde_json::value as json;
 use crate::de::FromJsonResponse;
 use crate::{TickerAgent, Result, StockQuote};
 use crate::error::{Error, ErrorKind};
+use crate::FloatMinMax;
 
 type Connector = HttpsConnector<HttpConnector>;
 type HttpsClient = Client<Connector, Body>;
@@ -73,7 +76,7 @@ pub struct YahooFinanceQuote { chart:Chart }
 #[derive(Debug, Deserialize)]
 pub struct Chart {
     result:Vec<ChartResult>,
-    //error:json::Value
+    error:json::Value
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,6 +90,9 @@ pub struct Meta {
     currency: String,
     symbol: String,
     timezone: String,
+
+    #[serde(rename="regularMarketPrice")]
+    regular_market_price: f64,
 
     #[serde(rename="previousClose")]
     previous_close: f64,
@@ -102,47 +108,64 @@ pub struct Indicators{ quote: Vec<Quote> }
 pub struct Quote {
     #[serde(deserialize_with="de::yahoo_nums")]
     open: Vec<f64>,
-    //high: Vec<json::Value>,
-    //low: Vec<json::Value>,
-    //close: Vec<json::Value>
+
+    #[serde(deserialize_with="de::yahoo_nums")]
+    high: Vec<f64>,
+
+    #[serde(deserialize_with="de::yahoo_nums")]
+    low: Vec<f64>,
+
+    #[serde(deserialize_with="de::yahoo_nums")]
+    close: Vec<f64>
 }
 
 impl YahooFinanceQuote {
-    pub fn symbol(&self) -> &str {
-        self.chart.result[0].meta.symbol.as_ref()
+    fn meta(&self) -> &Meta {
+        &self.chart.result[0].meta
     }
 
-    pub fn currency(&self) -> &str {
-        self.chart.result[0].meta.currency.as_ref()
+    fn quote(&self) -> &Quote {
+        &self.chart.result[0].indicators.quote[0]
+    }
+}
+
+impl StockQuote for YahooFinanceQuote {
+    fn symbol(&self) -> &str {
+        self.meta().symbol.as_ref()
     }
 
-    pub fn timezone(&self) -> &str {
-        self.chart.result[0].meta.timezone.as_ref()
+    fn high(&self) -> f64 {
+        self.quote().high.iter().cloned().f64_max()
     }
 
-    pub fn previous_close(&self) -> f64 {
-        self.chart.result[0].meta.previous_close
+    fn low(&self) -> f64 {
+        self.quote().low.iter().cloned().f64_min()
     }
 
-    pub fn exchange_name(&self) -> &str {
-        self.chart.result[0].meta.exchange_name.as_ref()
+    fn open(&self) -> f64 {
+        *self.quote().open.last().unwrap_or(&0f64)
+    }
+
+    fn price(&self) -> f64 {
+        self.meta().regular_market_price
+    }
+
+    fn previous_close(&self) -> f64 {
+        self.meta().previous_close
+    }
+
+    fn percent_change(&self) -> f64 {
+        -((self.previous_close() - self.price()) / self.previous_close()) * 100.0f64
+    }
+
+    fn price_points(&self) -> &Vec<f64> {
+        &self.quote().open
     }
 }
 
 pub struct YahooFinanceTicker {
     client: HttpsClient
 }
-
-// struct YahooFinanceQuote {
-//     symbol:String,
-//     // currency:String,
-//     // data_granularity:String,
-//     // open:Vec<f64>,
-//     // high:Vec<f64>,
-//     // low:Vec<f64>,
-//     // close:Vec<f64>,
-//     // volume:Vec<i64>,
-// }
 
 impl YahooFinanceTicker {
     pub fn new() -> YahooFinanceTicker {
@@ -183,29 +206,53 @@ impl YahooFinanceTicker {
         Ok(value)
     }
 
-    pub async fn get_quote<T:AsRef<str>>(&self, symbol: T) -> Result<YahooFinanceQuote> {
+    // pub async fn get_quote<T:AsRef<str>>(&self, symbol: T) -> Result<YahooFinanceQuote> {
+    //     let url = self.url(symbol.as_ref());
+    //     let buf = self.http_get(url).await?;
+    //     let reader = buf.reader();
+    //     let val: YahooFinanceQuote = serde_json::de::from_reader(reader)?;
+
+    //     if Value::Null != val.chart.error {
+    //         Err(Error::new(ErrorKind::Unknown, val.chart.error.to_string()))
+    //     } else {
+    //         Ok(val)
+    //     }
+    // }
+
+    // pub async fn get_quotes<'a,S, T>(&self, symbols:T) -> HashMap<String, Result<YahooFinanceQuote>>
+    //     where S: AsRef<str>,
+    //     T: Iterator<Item=S>
+    // {
+    //     let mut quotes: HashMap::<String,  Result<YahooFinanceQuote>> = HashMap::new();
+
+    //     // get quote bytes for each symbol
+    //     for symbol in symbols {
+    //         quotes.insert(symbol.as_ref().into(), self.get_quote(symbol).await);
+    //     }
+
+    //     quotes
+    // }
+}
+
+#[async_trait]
+impl TickerAgent for YahooFinanceTicker {
+    // async fn get_quotes<'e,I>(&self, symbols:I) -> HashMap<String, Result<Box<dyn StockQuote>>>
+    //     where I: Iterator<Item=&'e dyn AsRef<str>>
+    // {
+    //     let mut quotes: HashMap<String, Result<Box<dyn StockQuote>>> = HashMap::new();
+    //     quotes
+    // }
+
+    async fn get_quote(&self, symbol: String) -> Result<Box<dyn StockQuote>> {
         let url = self.url(symbol.as_ref());
         let buf = self.http_get(url).await?;
         let reader = buf.reader();
         let val: YahooFinanceQuote = serde_json::de::from_reader(reader)?;
 
-        Ok(val)
-    }
-
-    pub async fn get_quotes<'a, T: Iterator<Item=&'a str>>(&self, symbols:T) -> Result<()> {
-        let mut quotes: HashMap::<String, StockQuote> = HashMap::new();
-
-        // get quote bytes for each symbol
-        for symbol in symbols {
-            let url = self.url(symbol);
-            let buf = self.http_get(url).await?;
-
-            let reader = buf.reader();
-            let val: YahooFinanceQuote = serde_json::de::from_reader(reader)?;
-            print!("{:?}", val);
+        if Value::Null != val.chart.error {
+            Err(Error::new(ErrorKind::Unknown, val.chart.error.to_string()))
+        } else {
+            Ok(Box::new(val))
         }
-
-
-        Ok(())
     }
 }
