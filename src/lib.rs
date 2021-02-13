@@ -1,12 +1,10 @@
-#[macro_use]
 extern crate serde;
 
 use async_trait::async_trait;
 
 mod error;
 pub use error::{Error, ErrorKind};
-pub mod tickers;
-pub mod de;
+pub mod agents;
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type Symbol = String;
@@ -27,7 +25,7 @@ pub trait TickerAgent {
     async fn get_quote(&self, symbol:String) -> Result<Box<dyn StockQuote>>;
 }
 
-pub struct StockTicker<T> {
+pub struct StockTicker<T:TickerAgent=agents::YahooFinanceAgent> {
     agent: T
 }
 
@@ -44,10 +42,10 @@ impl<T:TickerAgent> StockTicker<T> {
     }
 }
 
-impl StockTicker<tickers::YahooFinanceTicker> {
+impl StockTicker<agents::YahooFinanceAgent> {
     pub fn new() -> Self {
         StockTicker {
-            agent: tickers::YahooFinanceTicker::new()
+            agent: agents::YahooFinanceAgent::new()
         }
     }
 }
@@ -65,9 +63,4 @@ impl<T> FloatMinMax for T where T: Iterator<Item=f64> {
     fn f64_min(&mut self) -> f64 {
         self.fold(f64::NAN, f64::min)
     }
-}
-
-
-pub fn get_ticker() -> Box<dyn TickerAgent> {
-    Box::new(tickers::YahooFinanceTicker::new())
 }

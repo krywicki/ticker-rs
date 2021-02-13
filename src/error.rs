@@ -1,10 +1,8 @@
 use std::fmt;
 use std::convert;
-use std::option;
 
 use hyper;
 use serde_json;
-use serde::de;
 
 #[derive(Debug)]
 pub enum ErrorKind {

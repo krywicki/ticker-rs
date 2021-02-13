@@ -1,5 +1,4 @@
 use std::iter::Iterator;
-use std::collections::HashMap;
 
 use async_trait::async_trait;
 
@@ -13,7 +12,6 @@ use serde::{ Deserialize, Deserializer };
 use serde_json::Value;
 use serde_json::value as json;
 
-use crate::de::FromJsonResponse;
 use crate::{TickerAgent, Result, StockQuote};
 use crate::error::{Error, ErrorKind};
 use crate::FloatMinMax;
@@ -163,13 +161,13 @@ impl StockQuote for YahooFinanceQuote {
     }
 }
 
-pub struct YahooFinanceTicker {
+pub struct YahooFinanceAgent {
     client: HttpsClient
 }
 
-impl YahooFinanceTicker {
-    pub fn new() -> YahooFinanceTicker {
-        YahooFinanceTicker {
+impl YahooFinanceAgent {
+    pub fn new() -> YahooFinanceAgent {
+        YahooFinanceAgent {
             client: Client::builder().build(Connector::new())
         }
     }
@@ -205,43 +203,10 @@ impl YahooFinanceTicker {
         let value:serde_json::Value = serde_json::de::from_reader(buf.reader())?;
         Ok(value)
     }
-
-    // pub async fn get_quote<T:AsRef<str>>(&self, symbol: T) -> Result<YahooFinanceQuote> {
-    //     let url = self.url(symbol.as_ref());
-    //     let buf = self.http_get(url).await?;
-    //     let reader = buf.reader();
-    //     let val: YahooFinanceQuote = serde_json::de::from_reader(reader)?;
-
-    //     if Value::Null != val.chart.error {
-    //         Err(Error::new(ErrorKind::Unknown, val.chart.error.to_string()))
-    //     } else {
-    //         Ok(val)
-    //     }
-    // }
-
-    // pub async fn get_quotes<'a,S, T>(&self, symbols:T) -> HashMap<String, Result<YahooFinanceQuote>>
-    //     where S: AsRef<str>,
-    //     T: Iterator<Item=S>
-    // {
-    //     let mut quotes: HashMap::<String,  Result<YahooFinanceQuote>> = HashMap::new();
-
-    //     // get quote bytes for each symbol
-    //     for symbol in symbols {
-    //         quotes.insert(symbol.as_ref().into(), self.get_quote(symbol).await);
-    //     }
-
-    //     quotes
-    // }
 }
 
 #[async_trait]
-impl TickerAgent for YahooFinanceTicker {
-    // async fn get_quotes<'e,I>(&self, symbols:I) -> HashMap<String, Result<Box<dyn StockQuote>>>
-    //     where I: Iterator<Item=&'e dyn AsRef<str>>
-    // {
-    //     let mut quotes: HashMap<String, Result<Box<dyn StockQuote>>> = HashMap::new();
-    //     quotes
-    // }
+impl TickerAgent for YahooFinanceAgent {
 
     async fn get_quote(&self, symbol: String) -> Result<Box<dyn StockQuote>> {
         let url = self.url(symbol.as_ref());
