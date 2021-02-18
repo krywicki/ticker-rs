@@ -1,5 +1,5 @@
 [package]
-name = "ticker-rs"
+name = "ticker"
 version = "0.1.0"
 authors = ["Joe Krywicki <joe.krywicki@gmail.com>"]
 edition = "2018"

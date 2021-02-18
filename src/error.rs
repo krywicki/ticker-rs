@@ -80,3 +80,9 @@ impl convert::From<serde_json::Error> for Error {
         Error::new(ErrorKind::DecodeError, err.to_string())
     }
 }
+
+impl convert::From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+        Error::new(ErrorKind::IOError, err.to_string())
+    }
+}
