@@ -5,6 +5,7 @@ use async_trait::async_trait;
 mod error;
 pub use error::{Error, ErrorKind};
 pub mod agents;
+pub mod ui;
 
 pub type Result<T> = std::result::Result<T, Error>;
 pub type Symbol = String;
