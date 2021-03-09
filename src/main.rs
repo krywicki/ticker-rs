@@ -24,7 +24,7 @@ use tui;
 #[tokio::main]
 async fn main() -> Result<(), ticker::Error> {
     let ticker = StockTicker::new();
-    let quote = ticker.quote("PLUG").await.unwrap();
+    let quote = ticker.quote("AMD").await.unwrap();
 
     let stdout = io::stdout().into_raw_mode()?;
     let backend = tui::backend::TermionBackend::new(stdout);
@@ -34,7 +34,6 @@ async fn main() -> Result<(), ticker::Error> {
     terminal.draw(|f| {
         f.render_widget(quote, f.size());
     })?;
-
 
     // good bleow here !!!!!
 

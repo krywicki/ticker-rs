@@ -30,11 +30,11 @@
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=ticker-rs",
-                    "--package=ticker-rs"
+                    "--bin=ticker",
+                    "--package=ticker"
                 ],
                 "filter": {
-                    "name": "ticker-rs",
+                    "name": "ticker",
                     "kind": "bin"
                 }
             },
