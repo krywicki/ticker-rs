@@ -1,35 +1,97 @@
 
-use std::io;
-use termion::raw::IntoRawMode;
+use std::{rc::Rc, sync::Arc};
+
+
 use tui::{
-    Terminal,
-    backend::TermionBackend,
     layout::{Constraint, Direction, Layout, Rect, Alignment},
     style::{Color, Modifier, Style},
     symbols,
     buffer::Buffer,
-    text::{ Text, Span, Spans },
-    widgets::canvas::{Canvas, Line, Map, MapResolution, Rectangle},
+    text::{ Span, Text },
     widgets::{
-        Axis, BarChart, Block, Borders, Cell, Chart, Dataset, Gauge, LineGauge, List, ListItem,
-        Paragraph, Row, Sparkline, Table, Tabs, Wrap, GraphType, Widget
+        Axis, Block, Borders, Chart, Dataset,
+        Paragraph, GraphType, Widget
     },
-    Frame,
 };
 
 
-use crate::{
-    Result, StockQuote
-};
+use crate::StockQuote;
 
-
-pub fn draw(quote: &Box<dyn StockQuote>) -> Result<()> {
-    let stdout = io::stdout().into_raw_mode()?;
-    let backend = TermionBackend::new(stdout);
-    let mut terminal = tui::Terminal::new(backend);
-
-    Ok(())
+pub struct App {
+    quotes: Vec<Rc<Box<dyn StockQuote>>>,
 }
+
+impl App {
+    pub fn from<I>(quotes: I) -> Self
+        where I: IntoIterator<Item=Box<dyn StockQuote>>
+    {
+        App {
+            quotes: quotes.into_iter().map(|q| Rc::new(q)).collect()
+        }
+    }
+}
+
+#[derive(Default)]
+struct SymbolsWidget {}
+
+impl<'a> Widget for SymbolsWidget {
+    fn render(self, area:Rect, buf: &mut Buffer) {
+        let block = Block::default()
+            .title(" symbols ")
+            .borders(Borders::ALL);
+
+        block.render(area, buf);
+    }
+}
+
+struct QuoteWidget {
+    quote: Rc<Box<dyn StockQuote>>
+}
+impl QuoteWidget {
+    fn new(quote: Rc<Box<dyn StockQuote>>) -> Self {
+        QuoteWidget {
+            quote
+        }
+    }
+}
+
+impl<'a> Widget for QuoteWidget {
+    fn render(self, area:Rect, buf: &mut Buffer) {
+        let title = Span::styled(
+            format!(" {} ", self.quote.symbol()),
+            Style::default().fg(Color::Yellow)
+        );
+
+        let block = Block::default()
+            .title(title)
+            .borders(Borders::ALL);
+
+        block.render(area, buf);
+    }
+}
+
+struct QuoteInfo {}
+struct QuoteChart {}
+
+impl<'a> Widget for App {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Max(30), Constraint::Percentage(75)])
+            .split(area);
+
+        SymbolsWidget::default().render(chunks[0], buf);
+        QuoteWidget::new(self.quotes[0].clone()).render(chunks[1], buf);
+
+    }
+}
+
+pub enum Event<I> {
+    Input(I),
+    Tick
+}
+
+pub const HEIGHT:u16 = 15;
 
 fn draw_quote_info_header(quote: &Box<dyn StockQuote>, area: Rect, buf: &mut Buffer) {
 
@@ -165,8 +227,8 @@ fn draw_quote_chart(quote: &Box<dyn StockQuote>, area: Rect, buf: &mut Buffer) {
 
 impl<'a> Widget for Box<dyn StockQuote> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-
-        let rect = Rect::new(area.x, area.y, area.width, 15);
+        //let rect = Rect::new(area.x, area.y, area.width, HEIGHT);
+        let rect = area;
         let block = Block::default().borders(Borders::ALL);
         let inner_rect = block.inner(rect);
 

@@ -86,3 +86,9 @@ impl convert::From<std::io::Error> for Error {
         Error::new(ErrorKind::IOError, err.to_string())
     }
 }
+
+impl std::convert::From<std::sync::mpsc::RecvError> for Error {
+    fn from(_err: std::sync::mpsc::RecvError) -> Self {
+        Error::new(ErrorKind::Unknown, _err.to_string())
+    }
+}

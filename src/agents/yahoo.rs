@@ -58,6 +58,9 @@ pub mod de {
                     }
                 },
 
+                Value::Null => {
+                    continue; // skip nulls
+                },
                 _ => {
                     return Err(Error::custom("unexpected type"))
                 }
@@ -175,7 +178,7 @@ impl YahooFinanceAgent {
     fn url(&self, symbol:&str) -> Uri {
         format!(
             "https://query1.finance.yahoo.com/v8/finance/chart/{}\
-            ?region=USincludePrePost=false&interval=2m&range=1d&corsDomain=finance.yahoo.com&.tsrc=finance",
+            ?region=USincludePrePost=false&interval=1m&range=1d&corsDomain=finance.yahoo.com&.tsrc=finance",
             symbol
         ).parse().unwrap()
     }
