@@ -1,61 +1,132 @@
 
 use std::{rc::Rc, sync::Arc};
-
-
 use tui::{
-    layout::{Constraint, Direction, Layout, Rect, Alignment},
-    style::{Color, Modifier, Style},
-    symbols,
     buffer::Buffer,
+    layout::{Constraint, Direction, Layout, Rect, Alignment},
+    style::{
+        Color, Modifier, Style
+    },
+    symbols,
     text::{ Span, Text },
     widgets::{
         Axis, Block, Borders, Chart, Dataset,
-        Paragraph, GraphType, Widget
-    },
+        GraphType, List, ListItem, ListState, Paragraph, Widget, StatefulWidget
+    }
 };
-
 
 use crate::StockQuote;
 
+
+type BoxQuote=Box<dyn StockQuote>;
 pub struct App {
-    quotes: Vec<Rc<Box<dyn StockQuote>>>,
+    quotes: Vec<BoxQuote>,
+    state: ListState
 }
 
 impl App {
     pub fn from<I>(quotes: I) -> Self
-        where I: IntoIterator<Item=Box<dyn StockQuote>>
+        where I: IntoIterator<Item=BoxQuote>
     {
         App {
-            quotes: quotes.into_iter().map(|q| Rc::new(q)).collect()
+            quotes: quotes.into_iter().collect(),
+            state: ListState::default()
+        }
+    }
+
+    pub fn next(&mut self) {
+        let i = match self.state.selected() {
+            Some(i) => {
+                if i >= self.quotes.len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            },
+            None => 0
+        };
+        self.state.select(Some(i));
+    }
+}
+
+struct SymbolsWidget<'a> {
+    quotes: &'a Vec<BoxQuote>
+}
+
+impl<'a> SymbolsWidget<'a> {
+    fn new(quotes: &'a Vec<BoxQuote>) -> Self {
+        SymbolsWidget {
+            quotes
         }
     }
 }
 
-#[derive(Default)]
-struct SymbolsWidget {}
+impl<'a> From<&'a BoxQuote> for ListItem<'a> {
+    fn from(quote: &'a BoxQuote) -> Self {
+        let prefix;
+        let color;
+        let modifier;
 
-impl<'a> Widget for SymbolsWidget {
-    fn render(self, area:Rect, buf: &mut Buffer) {
-        let block = Block::default()
-            .title(" symbols ")
-            .borders(Borders::ALL);
+        //== Determine colors and prefix +/-
+        if quote.percent_change() > 0.0 {
+            prefix = "+";
+            color = Color::LightGreen;
+        } else {
+            prefix = "";
+            color = Color::Red;
+        }
 
-        block.render(area, buf);
+        //== Determine if % change should blink
+        if quote.percent_change().abs() >= 5.0 {
+            modifier = Modifier::RAPID_BLINK;
+        } else {
+            modifier = Modifier::empty();
+        }
+
+        //== Create and return text
+        let text = Text::styled(
+            format!("{} {}{:.2}%", quote.symbol(), prefix, quote.percent_change()),
+            Style::default().fg(color).add_modifier(modifier)
+        );
+
+        ListItem::new(text)
     }
 }
 
-struct QuoteWidget {
-    quote: Rc<Box<dyn StockQuote>>
+impl<'a> StatefulWidget for SymbolsWidget<'a> {
+    type State=ListState;
+
+    fn render(self, area:Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let block = Block::default()
+            //.title(" symbols ")
+            .borders(Borders::ALL);
+
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let items: Vec<ListItem> = self.quotes.iter().map(|q| ListItem::from(q)).collect();
+        let list = List::new(items)
+            .block(Block::default())
+            .highlight_style(Style::default().bg(Color::Cyan))
+            .highlight_symbol(">>");
+
+        state.select(Some(0));
+        StatefulWidget::render(list, inner, buf, state);
+    }
 }
-impl QuoteWidget {
-    fn new(quote: Rc<Box<dyn StockQuote>>) -> Self {
+
+struct QuoteWidget<'a> {
+    quote: &'a BoxQuote
+}
+
+impl<'a> QuoteWidget<'a> {
+    fn new(quote: &'a BoxQuote) -> Self {
         QuoteWidget {
             quote
         }
     }
 }
 
-impl<'a> Widget for QuoteWidget {
+impl<'a> Widget for QuoteWidget<'a> {
     fn render(self, area:Rect, buf: &mut Buffer) {
         let title = Span::styled(
             format!(" {} ", self.quote.symbol()),
@@ -74,15 +145,14 @@ struct QuoteInfo {}
 struct QuoteChart {}
 
 impl<'a> Widget for App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
+    fn render(mut self, area: Rect, buf: &mut Buffer) {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Max(30), Constraint::Percentage(75)])
             .split(area);
 
-        SymbolsWidget::default().render(chunks[0], buf);
-        QuoteWidget::new(self.quotes[0].clone()).render(chunks[1], buf);
-
+        SymbolsWidget::new(&self.quotes).render(chunks[0], buf, &mut self.state);
+        QuoteWidget::new(&self.quotes[0]).render(chunks[1], buf);
     }
 }
 
