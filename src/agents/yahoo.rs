@@ -184,7 +184,7 @@ impl YahooFinanceAgent {
     }
 
     async fn http_get(&self, url:Uri) -> Result<impl Buf> {
-        // http get
+        //== Http GET
         let resp = self.client.get(url).await?;
         if resp.status() != StatusCode::OK {
             return Err(Error::new(
@@ -193,7 +193,7 @@ impl YahooFinanceAgent {
             );
         }
 
-        // return bytes
+        //== Return bytes
         let body = resp.into_body();
         let buf = hyper::body::aggregate(body).await?;
         Ok(buf)

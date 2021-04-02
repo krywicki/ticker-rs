@@ -1,35 +1,102 @@
 
-use std::{rc::Rc, sync::Arc};
+use std::{rc::Rc, io, thread, time::Duration, sync};
 use tui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect, Alignment},
+    layout::{ Constraint, Direction, Layout, Rect, Alignment },
     style::{
         Color, Modifier, Style
     },
     symbols,
     text::{ Span, Text },
-    widgets::{
-        Axis, Block, Borders, Chart, Dataset,
-        GraphType, List, ListItem, ListState, Paragraph, Widget, StatefulWidget
+    widgets::{ Axis, Block, Borders, Cell, Chart, Dataset, GraphType,
+        List, ListItem, ListState, Paragraph, Row, StatefulWidget, Table, Widget,
+        TableState
     }
 };
+use crossterm::{
+    event, execute, ExecutableCommand
+};
 
-use crate::StockQuote;
+use crate::{Error, StockQuote};
 
 
 type BoxQuote=Box<dyn StockQuote>;
+type QuoteList=Rc<Vec<BoxQuote>>;
+
 pub struct App {
-    quotes: Vec<BoxQuote>,
-    state: ListState
+    quotes: QuoteList,
+    symbols: SymbolsWidget,
+    chart: ChartWidget
 }
 
 impl App {
     pub fn from<I>(quotes: I) -> Self
         where I: IntoIterator<Item=BoxQuote>
     {
+        let quotes: QuoteList = Rc::new(quotes.into_iter().collect());
         App {
-            quotes: quotes.into_iter().collect(),
-            state: ListState::default()
+            quotes: quotes.clone(),
+            symbols: SymbolsWidget::new(quotes.clone()),
+            chart: ChartWidget::new()
+        }
+    }
+
+    pub fn run(self) -> Result<(), Error> {
+        crossterm::terminal::enable_raw_mode().expect("enabling raw mode");
+        io::stdout().execute(crossterm::terminal::EnterAlternateScreen).expect("enter alternate screen");
+
+        let backend = tui::backend::CrosstermBackend::new(io::stdout());
+        let mut terminal = tui::Terminal::new(backend)?;
+
+        execute!(terminal.backend_mut(), crossterm::terminal::EnterAlternateScreen).unwrap();
+        terminal.clear()?;
+        terminal.draw(|f| f.render_widget(self, f.size()))?;
+
+        let (tx, rx) = sync::mpsc::channel();
+        thread::spawn(move || {
+            loop {
+                if event::poll(Duration::from_millis(200)).expect("event polling") {
+                    if let event::Event::Key(key) = event::read().expect("can read events") {
+                        tx.send(Event::Input(key)).expect("tx - event");
+                    }
+                }
+            }
+        });
+
+
+        //== loop rx events
+        loop {
+            match rx.recv()? {
+
+                Event::Input(e) => match e.code {
+                    // quit app
+                    event::KeyCode::Char('q') => {
+                        crossterm::terminal::disable_raw_mode().expect("disable raw mode");
+                        terminal.show_cursor()?;
+                        break;
+                    }
+                    _ => {}
+                }
+                Event::Tick => {}
+            }
+        }
+
+        crossterm::terminal::disable_raw_mode().expect("enabling raw mode");
+        io::stdout().execute(crossterm::terminal::LeaveAlternateScreen).expect("exit alternate screen");
+        Ok(())
+    }
+}
+
+struct SymbolsWidget {
+    quotes: QuoteList,
+    state: TableState
+}
+
+impl SymbolsWidget {
+    fn new(quotes: QuoteList) -> Self {
+        SymbolsWidget {
+            quotes,
+            state: TableState::default()
         }
     }
 
@@ -48,19 +115,7 @@ impl App {
     }
 }
 
-struct SymbolsWidget<'a> {
-    quotes: &'a Vec<BoxQuote>
-}
-
-impl<'a> SymbolsWidget<'a> {
-    fn new(quotes: &'a Vec<BoxQuote>) -> Self {
-        SymbolsWidget {
-            quotes
-        }
-    }
-}
-
-impl<'a> From<&'a BoxQuote> for ListItem<'a> {
+impl<'a> From<&'a BoxQuote> for Row<'a> {
     fn from(quote: &'a BoxQuote) -> Self {
         let prefix;
         let color;
@@ -82,35 +137,38 @@ impl<'a> From<&'a BoxQuote> for ListItem<'a> {
             modifier = Modifier::empty();
         }
 
-        //== Create and return text
-        let text = Text::styled(
-            format!("{} {}{:.2}%", quote.symbol(), prefix, quote.percent_change()),
-            Style::default().fg(color).add_modifier(modifier)
-        );
-
-        ListItem::new(text)
+        //== Create and return row
+        Row::new(vec![
+            Cell::from(
+                Text::styled(
+                    quote.symbol(),
+                    Style::default().fg(Color::Yellow)
+                )
+            ),
+            Cell::from(
+                Text::styled(
+                    format!("{}{:.2}%", prefix, quote.percent_change()),
+                    Style::default().fg(color)
+                )
+            )
+        ])
     }
 }
 
-impl<'a> StatefulWidget for SymbolsWidget<'a> {
-    type State=ListState;
+impl Widget for SymbolsWidget {
 
-    fn render(self, area:Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let block = Block::default()
-            //.title(" symbols ")
-            .borders(Borders::ALL);
+    fn render(mut self, area:Rect, buf: &mut Buffer) {
+        let color = Color::Rgb(78, 78, 78);
+        let rows: Vec<Row> = self.quotes.iter().map(|q| Row::from(q)).collect();
+        let table = Table::new(rows)
+            .block(Block::default().borders(Borders::all()))
+            .widths(&[Constraint::Percentage(50), Constraint::Percentage(50)])
+            .highlight_style(Style::default().bg(color))
+            .highlight_symbol(" >> ");
 
-        let inner = block.inner(area);
-        block.render(area, buf);
+        self.state.select(Some(0));
 
-        let items: Vec<ListItem> = self.quotes.iter().map(|q| ListItem::from(q)).collect();
-        let list = List::new(items)
-            .block(Block::default())
-            .highlight_style(Style::default().bg(Color::Cyan))
-            .highlight_symbol(">>");
-
-        state.select(Some(0));
-        StatefulWidget::render(list, inner, buf, state);
+        StatefulWidget::render(table, area, buf, &mut self.state);
     }
 }
 
@@ -141,8 +199,14 @@ impl<'a> Widget for QuoteWidget<'a> {
     }
 }
 
-struct QuoteInfo {}
-struct QuoteChart {}
+
+struct ChartWidget {}
+
+impl ChartWidget {
+    fn new() -> Self {
+        ChartWidget {}
+    }
+}
 
 impl<'a> Widget for App {
     fn render(mut self, area: Rect, buf: &mut Buffer) {
@@ -151,7 +215,8 @@ impl<'a> Widget for App {
             .constraints([Constraint::Max(30), Constraint::Percentage(75)])
             .split(area);
 
-        SymbolsWidget::new(&self.quotes).render(chunks[0], buf, &mut self.state);
+        self.symbols.render(chunks[0], buf);
+        //SymbolsWidget::new(self.quotes.clone()).render(chunks[0], buf, &mut self.state);
         QuoteWidget::new(&self.quotes[0]).render(chunks[1], buf);
     }
 }
