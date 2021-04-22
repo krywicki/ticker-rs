@@ -25,9 +25,36 @@ type QuoteList=Rc<Vec<BoxQuote>>;
 
 pub struct App {
     quotes: QuoteList,
-    symbols: SymbolsWidget,
-    chart: ChartWidget
+    state: AppState
 }
+
+struct AppState {
+    quotes: QuoteList,
+    selected: Option<usize>
+}
+
+impl AppState {
+    fn new(quotes: QuoteList) -> Self {
+        AppState {
+            quotes: quotes,
+            selected: None
+        }
+    }
+
+    pub fn next(&mut self) {
+        match self.selected {
+            Some(i) => {
+                if i >= self.quotes.len() - 1 {
+                    self.selected = Some(0);
+                } else {
+                    self.selected = Some(i+1);
+                }
+            },
+            None => self.selected = None
+        }
+    }
+}
+
 
 impl App {
     pub fn from<I>(quotes: I) -> Self
@@ -36,12 +63,11 @@ impl App {
         let quotes: QuoteList = Rc::new(quotes.into_iter().collect());
         App {
             quotes: quotes.clone(),
-            symbols: SymbolsWidget::new(quotes.clone()),
-            chart: ChartWidget::new()
+            state: AppState::new(quotes.clone())
         }
     }
 
-    pub fn run(self) -> Result<(), Error> {
+    pub fn run(&mut self) -> Result<(), Error> {
         crossterm::terminal::enable_raw_mode().expect("enabling raw mode");
         io::stdout().execute(crossterm::terminal::EnterAlternateScreen).expect("enter alternate screen");
 
@@ -50,7 +76,9 @@ impl App {
 
         execute!(terminal.backend_mut(), crossterm::terminal::EnterAlternateScreen).unwrap();
         terminal.clear()?;
-        terminal.draw(|f| f.render_widget(self, f.size()))?;
+
+        terminal.draw(|f| f.render_stateful_widget(AppWidget::default(), f.size(), &mut self.state))?;
+        //f.render_widget(self, f.size()))?;
 
         let (tx, rx) = sync::mpsc::channel();
         thread::spawn(move || {
@@ -67,14 +95,16 @@ impl App {
         //== loop rx events
         loop {
             match rx.recv()? {
-
                 Event::Input(e) => match e.code {
                     // quit app
                     event::KeyCode::Char('q') => {
                         crossterm::terminal::disable_raw_mode().expect("disable raw mode");
                         terminal.show_cursor()?;
                         break;
-                    }
+                    },
+                    event::KeyCode::Down => {
+                        self.state.next()
+                    },
                     _ => {}
                 }
                 Event::Tick => {}
@@ -87,31 +117,52 @@ impl App {
     }
 }
 
+#[derive(Default)]
+struct AppWidget {}
+
+impl StatefulWidget for AppWidget {
+    type State=AppState;
+
+    fn render(self, area:Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Max(30), Constraint::Percentage(75)])
+            .split(area);
+
+        SymbolsWidget::default()
+            .quotes(state.quotes.clone())
+            .select(state.selected)
+            .render(chunks[0], buf);
+
+        QuoteWidget::default()
+            .quote(None)
+            .render(chunks[1], buf);
+    }
+}
+
 struct SymbolsWidget {
     quotes: QuoteList,
-    state: TableState
+    selected: Option<usize>
+}
+
+impl Default for SymbolsWidget {
+    fn default() -> Self {
+        SymbolsWidget {
+            quotes: QuoteList::default(),
+            selected: None
+        }
+    }
 }
 
 impl SymbolsWidget {
-    fn new(quotes: QuoteList) -> Self {
-        SymbolsWidget {
-            quotes,
-            state: TableState::default()
-        }
+    fn quotes(&mut self, quotes: QuoteList) -> &mut Self {
+        self.quotes = quotes;
+        self
     }
 
-    pub fn next(&mut self) {
-        let i = match self.state.selected() {
-            Some(i) => {
-                if i >= self.quotes.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            },
-            None => 0
-        };
-        self.state.select(Some(i));
+    fn select(&mut self, index: Option<usize>) -> &mut Self {
+        self.selected = index;
+        self
     }
 }
 
@@ -155,9 +206,9 @@ impl<'a> From<&'a BoxQuote> for Row<'a> {
     }
 }
 
-impl Widget for SymbolsWidget {
+impl Widget for &mut SymbolsWidget {
 
-    fn render(mut self, area:Rect, buf: &mut Buffer) {
+    fn render(self, area:Rect, buf: &mut Buffer) {
         let color = Color::Rgb(78, 78, 78);
         let rows: Vec<Row> = self.quotes.iter().map(|q| Row::from(q)).collect();
         let table = Table::new(rows)
@@ -166,58 +217,57 @@ impl Widget for SymbolsWidget {
             .highlight_style(Style::default().bg(color))
             .highlight_symbol(" >> ");
 
-        self.state.select(Some(0));
+        let mut table_state = TableState::default();
+        table_state.select(self.selected);
 
-        StatefulWidget::render(table, area, buf, &mut self.state);
+        StatefulWidget::render(table, area, buf, &mut table_state);
     }
 }
 
 struct QuoteWidget<'a> {
-    quote: &'a BoxQuote
+    quote: Option<&'a BoxQuote>
+}
+
+impl<'a> Default for QuoteWidget<'a> {
+    fn default() -> Self {
+        QuoteWidget {
+            quote: None
+        }
+    }
 }
 
 impl<'a> QuoteWidget<'a> {
-    fn new(quote: &'a BoxQuote) -> Self {
-        QuoteWidget {
-            quote
-        }
+    fn quote(mut self, quote: Option<&'a BoxQuote>) -> Self {
+        self.quote = quote;
+        self
     }
 }
 
 impl<'a> Widget for QuoteWidget<'a> {
     fn render(self, area:Rect, buf: &mut Buffer) {
-        let title = Span::styled(
-            format!(" {} ", self.quote.symbol()),
-            Style::default().fg(Color::Yellow)
-        );
 
-        let block = Block::default()
-            .title(title)
-            .borders(Borders::ALL);
+        let block = Block::default().borders(Borders::ALL);
+
+        if let Some(quote) = self.quote {
+            let title = Span::styled(
+                format!(" {} ", quote.symbol()),
+                Style::default().fg(Color::Yellow)
+            );
+
+            let block = Block::default()
+                .title(title)
+                .borders(Borders::ALL);
+        }
 
         block.render(area, buf);
     }
 }
-
 
 struct ChartWidget {}
 
 impl ChartWidget {
     fn new() -> Self {
         ChartWidget {}
-    }
-}
-
-impl<'a> Widget for App {
-    fn render(mut self, area: Rect, buf: &mut Buffer) {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Max(30), Constraint::Percentage(75)])
-            .split(area);
-
-        self.symbols.render(chunks[0], buf);
-        //SymbolsWidget::new(self.quotes.clone()).render(chunks[0], buf, &mut self.state);
-        QuoteWidget::new(&self.quotes[0]).render(chunks[1], buf);
     }
 }
 

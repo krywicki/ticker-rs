@@ -22,6 +22,6 @@ async fn main() -> Result<(), ticker::Error> {
         quotes.push(ticker.quote(symbol).await.unwrap());
     }
 
-    let app = ui::App::from(quotes);
+    let mut app = ui::App::from(quotes);
     app.run()
 }
