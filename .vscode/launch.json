@@ -38,7 +38,7 @@
                     "kind": "bin"
                 }
             },
-            "args": ["amd"],
+            "args": ["amd", "gme", "tsla"],
             "cwd": "${workspaceFolder}"
         },
         {

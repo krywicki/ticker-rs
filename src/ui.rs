@@ -1,30 +1,21 @@
 
 use std::{rc::Rc, io, thread, time::Duration, sync};
-use tui::{
-    buffer::Buffer,
-    layout::{ Constraint, Direction, Layout, Rect, Alignment },
-    style::{
+use tui::{backend::CrosstermBackend, buffer::Buffer, layout::{ Constraint, Direction, Layout, Rect, Alignment }, style::{
         Color, Modifier, Style
-    },
-    symbols,
-    text::{ Span, Text },
-    widgets::{ Axis, Block, Borders, Cell, Chart, Dataset, GraphType,
+    }, symbols, text::{ Span, Text }, widgets::{ Axis, Block, Borders, Cell, Chart, Dataset, GraphType,
         List, ListItem, ListState, Paragraph, Row, StatefulWidget, Table, Widget,
         TableState
-    }
-};
+    }};
 use crossterm::{
     event, execute, ExecutableCommand
 };
 
 use crate::{Error, StockQuote};
 
-
 type BoxQuote=Box<dyn StockQuote>;
 type QuoteList=Rc<Vec<BoxQuote>>;
 
 pub struct App {
-    quotes: QuoteList,
     state: AppState
 }
 
@@ -35,20 +26,34 @@ struct AppState {
 
 impl AppState {
     fn new(quotes: QuoteList) -> Self {
+
         AppState {
-            quotes: quotes,
-            selected: None
+            quotes: quotes.clone(),
+            selected: if quotes.len() > 0 { Some(0) } else { None }
         }
     }
 
     pub fn next(&mut self) {
         match self.selected {
             Some(i) => {
-                if i >= self.quotes.len() - 1 {
-                    self.selected = Some(0);
-                } else {
+                 if i + 1 < self.quotes.len() {
                     self.selected = Some(i+1);
-                }
+                } else {
+                    self.selected = Some(0);
+                };
+            },
+            None => self.selected = None
+        }
+    }
+
+    pub fn previous(&mut self) {
+        match self.selected {
+            Some(i) => {
+                 if i > 0 {
+                    self.selected = Some(i-1);
+                } else {
+                    self.selected = Some(self.quotes.len() - 1);
+                };
             },
             None => self.selected = None
         }
@@ -61,25 +66,30 @@ impl App {
         where I: IntoIterator<Item=BoxQuote>
     {
         let quotes: QuoteList = Rc::new(quotes.into_iter().collect());
+
         App {
-            quotes: quotes.clone(),
             state: AppState::new(quotes.clone())
         }
     }
 
-    pub fn run(&mut self) -> Result<(), Error> {
-        crossterm::terminal::enable_raw_mode().expect("enabling raw mode");
-        io::stdout().execute(crossterm::terminal::EnterAlternateScreen).expect("enter alternate screen");
+    fn draw<B>(&mut self, terminal: &mut tui::Terminal<B>) -> Result<(), Error>
+        where B: tui::backend::Backend
+    {
+        terminal.draw(|f| {
+                f.render_stateful_widget(AppWidget::default(), f.size(), &mut self.state);
+            }
+        )?;
+        Ok(())
+    }
 
+    fn run_draw_loop(&mut self) -> Result<(), Error> {
         let backend = tui::backend::CrosstermBackend::new(io::stdout());
         let mut terminal = tui::Terminal::new(backend)?;
 
         execute!(terminal.backend_mut(), crossterm::terminal::EnterAlternateScreen).unwrap();
         terminal.clear()?;
 
-        terminal.draw(|f| f.render_stateful_widget(AppWidget::default(), f.size(), &mut self.state))?;
-        //f.render_widget(self, f.size()))?;
-
+        //== loop tx events (threaded)
         let (tx, rx) = sync::mpsc::channel();
         thread::spawn(move || {
             loop {
@@ -94,26 +104,45 @@ impl App {
 
         //== loop rx events
         loop {
+            self.draw(&mut terminal)?;
+
             match rx.recv()? {
                 Event::Input(e) => match e.code {
-                    // quit app
+                    //== quit app
                     event::KeyCode::Char('q') => {
                         crossterm::terminal::disable_raw_mode().expect("disable raw mode");
                         terminal.show_cursor()?;
                         break;
                     },
+                    //== Next quote
                     event::KeyCode::Down => {
                         self.state.next()
                     },
+                    //== Previous quote
+                    event::KeyCode::Up => {
+                        self.state.previous()
+                    }
                     _ => {}
                 }
                 Event::Tick => {}
             }
         }
 
+        Ok(())
+    }
+
+    pub fn run(&mut self) -> Result<(), Error> {
+        //== terminal setup
+        crossterm::terminal::enable_raw_mode().expect("enabling raw mode");
+        io::stdout().execute(crossterm::terminal::EnterAlternateScreen).expect("enter alternate screen");
+
+        let result = self.run_draw_loop();
+
+        //== terminal cleanup
         crossterm::terminal::disable_raw_mode().expect("enabling raw mode");
         io::stdout().execute(crossterm::terminal::LeaveAlternateScreen).expect("exit alternate screen");
-        Ok(())
+
+        result
     }
 }
 
