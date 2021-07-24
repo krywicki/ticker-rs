@@ -58,6 +58,14 @@ impl AppState {
             None => self.selected = None
         }
     }
+
+    pub fn selected(&self) -> Option<&BoxQuote> {
+        if let Some(i) = self.selected {
+            Some(&self.quotes[i])
+        } else {
+            None
+        }
+    }
 }
 
 
@@ -163,8 +171,8 @@ impl StatefulWidget for AppWidget {
             .select(state.selected)
             .render(chunks[0], buf);
 
-        QuoteWidget::default()
-            .quote(None)
+        ChartWidget::default()
+            .quote(state.selected())
             .render(chunks[1], buf);
     }
 }
@@ -292,13 +300,80 @@ impl<'a> Widget for QuoteWidget<'a> {
     }
 }
 
-struct ChartWidget {}
+struct ChartWidget<'a> {
+    quote: Option<&'a BoxQuote>
+}
 
-impl ChartWidget {
-    fn new() -> Self {
-        ChartWidget {}
+impl<'a> ChartWidget<'a> {
+    fn quote(mut self, quote: Option<&'a BoxQuote>) -> Self {
+        self.quote = quote;
+        self
     }
 }
+
+impl<'a> Default for ChartWidget<'a> {
+    fn default() -> Self {
+        ChartWidget {
+            quote: None
+        }
+    }
+}
+
+impl<'a> Widget for ChartWidget<'a> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if self.quote.is_none() {
+            return;
+        }
+
+        let quote = self.quote.unwrap();
+
+        //== get price points as [...,(x,y),...] coords for line chart
+        let points: Vec<(f64, f64)> = quote.price_points().iter().cloned()
+            .enumerate().map(|tuple| (tuple.0 as f64, tuple.1)).collect();
+
+        //== create dataset
+        let color = if quote.price() >= quote.previous_close() { Color::Green } else { Color::Red };
+        let dataset = Dataset::default()
+            //.name(quote.symbol())
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(color))
+            .data(points.as_slice());
+
+        //== create x-axis line to represent previous close
+        let prev_close_points: Vec<(f64, f64)> = quote.price_points().iter()
+            .enumerate().map(|tuple| (tuple.0 as f64, quote.previous_close())).collect();
+
+        //== create y-axis labels. (# of labels between high-to-low)
+        let y_step = (quote.high() - quote.low()) / 10.0;
+        let y_labels: Vec<Span> = (1..=10).map(|x| Span::from(format!("${:.2}", quote.low() + (x as f64 * y_step)))).collect();
+
+        //== create previous close dataset
+        let prev_close_dataset = Dataset::default()
+            .marker(symbols::Marker::Dot)
+            .graph_type(GraphType::Line)
+            .style(Style::default().fg(Color::DarkGray))
+            .data(prev_close_points.as_slice());
+
+
+        //== create line chart to render datasets
+        let chart = Chart::new(vec![prev_close_dataset, dataset, ])
+            .block(Block::default().borders(Borders::ALL))
+            .x_axis(Axis::default()
+                .style(Style::default().fg(Color::White))
+                .bounds([0.0, quote.price_points().len() as f64])
+            )
+            .y_axis(Axis::default()
+                .style(Style::default().fg(Color::White))
+                .bounds([quote.low(), quote.high()])
+                .labels(y_labels)
+            );
+
+        chart.render(area, buf);
+    }
+}
+
+
 
 pub enum Event<I> {
     Input(I),
