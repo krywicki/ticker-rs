@@ -1,54 +1,49 @@
 extern crate serde;
 
+use serde::{ Serialize, Deserialize };
 use async_trait::async_trait;
+use std::fmt;
 
 mod error;
-pub use error::{Error, ErrorKind};
+pub use error::QuoteError;
 pub mod agents;
-pub mod ui;
+//pub mod ui;
 
-pub type Result<T> = std::result::Result<T, Error>;
 pub type Symbol = String;
 
-pub trait StockQuote {
-    fn symbol(&self) -> &str;
-    fn high(&self) -> f64;
-    fn low(&self) -> f64;
-    fn open(&self) -> f64;
-    fn price(&self) -> f64;
-    fn percent_change(&self) -> f64;
-    fn previous_close(&self) -> f64;
-    fn price_points(&self) -> &Vec<f64>;
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all="camelCase")]
+pub struct StockQuote {
+    symbol: String,
+    high: f64,
+    low: f64,
+    open: f64,
+    price: f64,
+    percent_change: f64,
+    pervious_close: f64,
+    price_points: Vec<f64>
+}
+
+impl fmt::Display for StockQuote {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let val = serde_json::to_string_pretty(&self)
+            .unwrap_or_else(|err| {
+                err.to_string()
+            });
+
+        write!(f, "{}", val)
+    }
 }
 
 #[async_trait]
 pub trait TickerAgent {
-    async fn get_quote(&self, symbol:String) -> Result<Box<dyn StockQuote>>;
+    fn new() -> Self;
+    async fn get_quote(&self, symbol:String) -> Result<StockQuote,QuoteError>;
 }
 
-pub struct StockTicker<T:TickerAgent=agents::YahooFinanceAgent> {
-    agent: T
-}
-
-impl<T:TickerAgent> StockTicker<T> {
-
-    pub fn from(agent:T) -> Self {
-        StockTicker {
-            agent
-        }
-    }
-
-    pub async fn quote<S:AsRef<str>>(&self, symbol:S) -> Result<Box<dyn StockQuote>> {
-        return self.agent.get_quote(symbol.as_ref().into()).await;
-    }
-}
-
-impl StockTicker<agents::YahooFinanceAgent> {
-    pub fn new() -> Self {
-        StockTicker {
-            agent: agents::YahooFinanceAgent::new()
-        }
-    }
+/// Get ticker agent
+pub fn agent() -> impl TickerAgent {
+    agents::YahooFinanceAgent::new()
 }
 
 pub trait FloatMinMax {
@@ -58,10 +53,10 @@ pub trait FloatMinMax {
 
 impl<T> FloatMinMax for T where T: Iterator<Item=f64> {
     fn f64_max(&mut self) -> f64 {
-        self.fold(f64::NAN, f64::max)
+        self.fold(f64::NAN, |a,b| a.max(b) )
     }
 
     fn f64_min(&mut self) -> f64 {
-        self.fold(f64::NAN, f64::min)
+        self.fold(f64::NAN, |a,b| a.min(b) )
     }
 }

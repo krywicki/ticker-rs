@@ -1,94 +1,38 @@
 use std::fmt;
-use std::convert;
 
-use hyper;
+use serde::{ Serialize, Serializer };
 use serde_json;
+use serde_json::json;
 
 #[derive(Debug)]
-pub enum ErrorKind {
-    HttpError,
-    DecodeError,
-    IOError,
-    Unknown
+pub struct QuoteError {
+    pub symbol: String,
+    pub message: String,
+    pub detail: Option<String>,
+    pub source: Option<Box<dyn std::error::Error>>
 }
 
-impl fmt::Display for ErrorKind {
+impl fmt::Display for QuoteError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let s = match *self {
-            ErrorKind::HttpError => "HTTP Error",
-            ErrorKind::DecodeError => "Decode Error",
-            ErrorKind::IOError => "IO Error",
-            ErrorKind::Unknown => "Unknown Error"
-        };
-        write!(f, "{}", s)?;
-        Ok(())
+        let val = serde_json::to_string_pretty(self).unwrap();
+        write!(f, "{}", val)
     }
 }
 
-#[derive(Debug)]
-pub struct Error {
-    pub kind: ErrorKind,
-    pub msg: String
-}
+impl Serialize for QuoteError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer
+    {
+        let json = json!({
+            "symbol": self.symbol,
+            "detail": self.detail.as_ref().unwrap_or(&"".into()),
+            "source": match self.source {
+                Some(ref err) => err.to_string(),
+                _ => "".into()
+            }
+        });
 
-impl Error {
-    pub fn new<T:AsRef<str>>(kind:ErrorKind, msg:T) -> Error {
-        Error {
-            kind,
-            msg: msg.as_ref().into()
-        }
-    }
-
-    pub fn simple(kind:ErrorKind) -> Error {
-        Error {
-            kind,
-            msg:String::new()
-        }
-    }
-}
-
-impl convert::From<hyper::Error> for Error {
-    fn from(_err: hyper::Error) -> Self {
-        let msg:String;
-
-        if _err.is_body_write_aborted() {
-            msg = "body write aborted".into();
-        } else if _err.is_canceled() {
-            msg = "canceled".into();
-        } else if _err.is_closed() {
-            msg = "closed".into();
-        } else if _err.is_connect() {
-            msg = "connect failure".into();
-        } else if _err.is_incomplete_message() {
-            msg = "incomplete message".into();
-        } else if _err.is_parse() {
-            msg = "parse failure".into();
-        } else if _err.is_timeout() {
-            msg = "timed out".into();
-        } else if _err.is_user() {
-            msg = "user error".into();
-        } else {
-            msg = "unknown hyper error".into()
-        }
-
-        Error::new(ErrorKind::HttpError, msg)
-    }
-}
-
-impl convert::From<serde_json::Error> for Error {
-    fn from(err: serde_json::Error) -> Self {
-        Error::new(ErrorKind::DecodeError, err.to_string())
-    }
-}
-
-impl convert::From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error::new(ErrorKind::IOError, err.to_string())
-    }
-}
-
-impl std::convert::From<std::sync::mpsc::RecvError> for Error {
-    fn from(_err: std::sync::mpsc::RecvError) -> Self {
-        Error::new(ErrorKind::Unknown, _err.to_string())
+        json.serialize(serializer)
     }
 }

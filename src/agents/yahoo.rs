@@ -2,24 +2,13 @@ use std::iter::Iterator;
 
 use async_trait::async_trait;
 
-use hyper::{ Client, http::uri::Uri};
-use hyper::client::HttpConnector;
-use hyper_tls::HttpsConnector;
-use hyper::{Body, StatusCode};
-use hyper::body::Buf;
-
+use reqwest;
 use serde::{ Deserialize, Deserializer };
-use serde_json::Value;
 use serde_json::value as json;
 
-use crate::{TickerAgent, Result, StockQuote};
-use crate::error::{Error, ErrorKind};
+use crate::error::QuoteError;
+use crate::{TickerAgent, StockQuote};
 use crate::FloatMinMax;
-
-type Connector = HttpsConnector<HttpConnector>;
-type HttpsClient = Client<Connector, Body>;
-
-
 ///
 /// Deserializer helpers
 ///
@@ -28,6 +17,48 @@ pub mod de {
     use serde_json::Value;
     use serde::de::Error as Error;
 
+    #[derive(Debug, Deserialize)]
+    pub struct Chart {
+        pub result:Vec<ChartResult>,
+        pub error:json::Value
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct ChartResult {
+        pub meta:Meta,
+        pub indicators: Indicators
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all="camelCase")]
+    pub struct Meta {
+        pub currency: String,
+        pub symbol: String,
+        pub timezone: String,
+        pub regular_market_price: f64,
+        pub previous_close: f64,
+        pub exchange_name: String
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Indicators{ pub quote: Vec<Quote> }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Quote {
+        #[serde(deserialize_with="yahoo_nums")]
+        pub open: Vec<f64>,
+
+        #[serde(deserialize_with="yahoo_nums")]
+        pub high: Vec<f64>,
+
+        #[serde(deserialize_with="yahoo_nums")]
+        pub low: Vec<f64>,
+
+        #[serde(deserialize_with="yahoo_nums")]
+        pub close: Vec<f64>
+    }
+
+    /// unwrap json number
     fn unwrap_num<'de, D>(num: &Value) -> std::result::Result<f64, D::Error>
         where D: Deserializer<'de>
     {
@@ -39,98 +70,49 @@ pub mod de {
         Err(Error::custom("expected Some num"))
     }
 
+    /// deserialize yahoo numbers
     pub fn yahoo_nums<'de, D>(d:D) -> std::result::Result<Vec<f64>, D::Error>
         where D: Deserializer<'de>
     {
+        let mut nums:Vec<f64> = vec!();
         let vals = Vec::<serde_json::Value>::deserialize(d);
         let vals:Vec::<&serde_json::Value> = vals.iter().flatten().collect();
 
-        let mut _vals:Vec<f64> = vec!();
         for val in vals {
             match val {
-                Value::Number(_) => {
-                    _vals.push(unwrap_num::<D>(val)?);
-                },
-
+                Value::Number(_) => nums.push(unwrap_num::<D>(val)?),
+                Value::Null => continue, // skip nulls,
                 Value::Array(array) => {
-                    for _val in array {
-                        _vals.push(unwrap_num::<D>(_val)?);
-                    }
+                    array.iter()
+                        .try_for_each(|num| -> Result<(), D::Error> {
+                            let n = unwrap_num::<D>(num)?;
+                            nums.push(n);
+                            Ok(())
+                        })?;
                 },
-
-                Value::Null => {
-                    continue; // skip nulls
-                },
-                _ => {
-                    return Err(Error::custom("unexpected type"))
-                }
+                _ => return Err(Error::custom("unexpected type"))
             }
         }
 
-        Ok(_vals)
+        Ok(nums)
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub struct YahooFinanceQuote { chart:Chart }
-
-#[derive(Debug, Deserialize)]
-pub struct Chart {
-    result:Vec<ChartResult>,
-    error:json::Value
+pub struct YahooFinanceQuote {
+    chart: json::Value,
+    error: Option<json::Value>
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ChartResult {
-    meta:Meta,
-    indicators: Indicators
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Meta {
-    currency: String,
-    symbol: String,
-    timezone: String,
-
-    #[serde(rename="regularMarketPrice")]
-    regular_market_price: f64,
-
-    #[serde(rename="previousClose")]
-    previous_close: f64,
-
-    #[serde(rename="exchangeName")]
-    exchange_name: String
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Indicators{ quote: Vec<Quote> }
-
-#[derive(Debug, Deserialize)]
-pub struct Quote {
-    #[serde(deserialize_with="de::yahoo_nums")]
-    open: Vec<f64>,
-
-    #[serde(deserialize_with="de::yahoo_nums")]
-    high: Vec<f64>,
-
-    #[serde(deserialize_with="de::yahoo_nums")]
-    low: Vec<f64>,
-
-    #[serde(deserialize_with="de::yahoo_nums")]
-    close: Vec<f64>
-}
-
-impl YahooFinanceQuote {
-    fn meta(&self) -> &Meta {
-        &self.chart.result[0].meta
+impl de::Chart {
+    fn meta(&self) -> &de::Meta {
+        &self.result[0].meta
     }
 
-    fn quote(&self) -> &Quote {
-        &self.chart.result[0].indicators.quote[0]
+    fn quote(&self) -> &de::Quote {
+        &self.result[0].indicators.quote[0]
     }
-}
 
-impl StockQuote for YahooFinanceQuote {
     fn symbol(&self) -> &str {
         self.meta().symbol.as_ref()
     }
@@ -144,7 +126,7 @@ impl StockQuote for YahooFinanceQuote {
     }
 
     fn open(&self) -> f64 {
-        *self.quote().open.last().unwrap_or(&0f64)
+        *self.quote().open.first().unwrap_or(&0f64)
     }
 
     fn price(&self) -> f64 {
@@ -164,63 +146,102 @@ impl StockQuote for YahooFinanceQuote {
     }
 }
 
+impl From<de::Chart> for StockQuote {
+    fn from(yahoo: de::Chart) -> StockQuote {
+        StockQuote {
+            symbol: yahoo.symbol().into(),
+            high: yahoo.high(),
+            low: yahoo.low(),
+            open: yahoo.open(),
+            price: yahoo.price(),
+            pervious_close: yahoo.previous_close(),
+            percent_change: yahoo.percent_change(),
+            price_points: yahoo.price_points().to_vec()
+        }
+    }
+}
+
 pub struct YahooFinanceAgent {
-    client: HttpsClient
+    client: reqwest::Client,
 }
 
 impl YahooFinanceAgent {
-    pub fn new() -> YahooFinanceAgent {
-        YahooFinanceAgent {
-            client: Client::builder().build(Connector::new())
+
+    fn map_http_err(&self, symbol:&String, message:String, err: reqwest::Error) -> QuoteError {
+        QuoteError {
+            symbol: symbol.to_string(),
+            message: message,
+            detail: Some(err.to_string()),
+            source: Some(Box::new(err))
         }
     }
 
-    fn url(&self, symbol:&str) -> Uri {
-        format!(
-            "https://query1.finance.yahoo.com/v8/finance/chart/{}\
-            ?region=USincludePrePost=false&interval=1m&range=1d&corsDomain=finance.yahoo.com&.tsrc=finance",
-            symbol
-        ).parse().unwrap()
-    }
+    async fn http_get_quote(&self, symbol: &String) -> Result<reqwest::Response, QuoteError> {
+        //== http get from yahoo finance
+        let var = self.client
+            .get(format!("https://query1.finance.yahoo.com/v8/finance/chart/{}", symbol))
+            .form(&[
+                ("region",          "US"),
+                ("lang",            "en-US"),
+                ("includePrePost",  "true"),
+                ("interval",        "2m"),
+                ("range",           "1d"),
+                ("corsDomain",      "finance.yahoo.com"),
+                (".tsrc",           "finance")
+            ])
 
-    async fn http_get(&self, url:Uri) -> Result<impl Buf> {
-        //== Http GET
-        let resp = self.client.get(url).await?;
-        if resp.status() != StatusCode::OK {
-            return Err(Error::new(
-                ErrorKind::HttpError,
-                resp.status().canonical_reason().unwrap_or("unknown"))
-            );
-        }
+            .send()
+            .await
+            .map_err(|err| self.map_http_err(&symbol, "Request Failure".into(), err))?
 
-        //== Return bytes
-        let body = resp.into_body();
-        let buf = hyper::body::aggregate(body).await?;
-        Ok(buf)
-    }
+            .error_for_status()
+            .map_err(|err| self.map_http_err(&symbol, "Request Failure".into(), err))?;
 
-    pub async fn get_quote_json<T:AsRef<str>>(&self, symbol:T) -> Result<serde_json::Value> {
-        let url = self.url(symbol.as_ref());
-        let buf = self.http_get(url).await?;
-
-        let value:serde_json::Value = serde_json::de::from_reader(buf.reader())?;
-        Ok(value)
+        Ok(var)
     }
 }
 
 #[async_trait]
 impl TickerAgent for YahooFinanceAgent {
-
-    async fn get_quote(&self, symbol: String) -> Result<Box<dyn StockQuote>> {
-        let url = self.url(symbol.as_ref());
-        let buf = self.http_get(url).await?;
-        let reader = buf.reader();
-        let val: YahooFinanceQuote = serde_json::de::from_reader(reader)?;
-
-        if Value::Null != val.chart.error {
-            Err(Error::new(ErrorKind::Unknown, val.chart.error.to_string()))
-        } else {
-            Ok(Box::new(val))
+    fn new() -> YahooFinanceAgent {
+        YahooFinanceAgent {
+            client: reqwest::Client::new()
         }
+    }
+
+    async fn get_quote(&self, symbol: String) -> Result<StockQuote, QuoteError> {
+
+        // http get yahoo quote
+        let response = self.http_get_quote(&symbol).await?;
+
+        //== deserialize
+        let quote = response
+            .json::<YahooFinanceQuote>()
+            .await
+            .map_err(|err| self.map_http_err(&symbol, "Parse Failure".into(), err))?;
+
+        //== check errors
+        if let Some(err) = quote.error {
+            return Err(QuoteError{
+                symbol: symbol,
+                message: "Missing Data".into(),
+                detail: Some(err.to_string()),
+                source: None
+            });
+        }
+
+        //== convert into stock quote
+        let q = serde_json::from_value::<de::Chart>(quote.chart)
+            .map_err(|err| {
+                QuoteError {
+                    symbol: symbol.to_string(),
+                    message: "Parse Failure".into(),
+                    detail: Some(err.to_string()),
+                    source: Some(Box::new(err))
+                }
+            })?
+            .into();
+
+        Ok(q)
     }
 }
